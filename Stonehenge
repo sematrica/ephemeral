@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Three.js Scene with Stonehenge and Animated Movement</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background-color: black;
+        }
+        canvas {
+            display: block;
+        }
+        #blocker {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            z-index: 10;
+        }
+        #instructions {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 18px;
+        }
+        #console {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 40px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            display: none;
+            font-size: 16px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #consoleInput {
+            width: 100%;
+            background: none;
+            border: none;
+            color: green;
+            outline: none;
+            font-size: 16px;
+        }
+        #popupPassword {
+            position: absolute;
+            display: none;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 20;
+        }
+        #passwordField {
+            padding: 8px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        #timeDisplay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 12px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="blocker">
+    Click to Play (Pointer will lock on screen)
+</div>
+
+<div id="instructions">Use WASD to move. Tab console command "change_sky: / add_sun"</div>
+
+<div id="popupPassword">
+    Enter password: <br>
+    <input type="password" id="passwordField" placeholder="Enter password..."><br>
+    <button onclick="verifyPassword()">Submit</button>
+    <p id="passwordMessage"></p>
+</div>
+
+<!-- Console Input -->
+<div id="console">
+    <input type="text" id="consoleInput" placeholder="Enter command...">
+</div>
+
+<!-- Time Display -->
+<div id="timeDisplay">
+    <div id="localTime">Local Time: --:--</div>
+    <div id="sunsetTime">Time Until Sunset: --:--</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/objects/Water.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/josephg/noisejs@latest/perlin.js"></script>
+
+<script>
+    let scene, camera, renderer, playerPosition, water, sun, ambientLight, starField, island, door, stonehengeGroup, biggestStone;
+    let yaw = 0, pitch = 0, velocity = new THREE.Vector3();
+    const playerSpeed = 15, gravity = 0.02, jumpSpeed = 0.35;
+    let isJumping = false, keyState = {}, nearDoor = false, nearStonehenge = false, usingRealTime = false;
+    let consoleVisible = false;
+    const waterLevel = 0; // The water level
+    const dayDuration = 24 * 60 * 1000; // 24 minutes in milliseconds (1 day = 24 minutes)
+    const sunsetHour = 18; // Sunset occurs at 6:00 PM (18:00) in the cycle
+    const hoursInDay = 24;
+
+    const clock = new THREE.Clock();
+    let islandGeometry, islandMesh;
+    let stonehengeInitialY;
+
+    init();
+    createIslandWithEnhancedCollision(); // Create terrain with enhanced collision
+    createSun(); // Set up the sun
+    createStars(); // Set up the starfield
+    createDoor(); // Create a door
+    createStonehenge(); // Create Stonehenge on top of the hill
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+        playerPosition = new THREE.Vector3(0, 10, 0); // Start player above the ground
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        ambientLight = new THREE.AmbientLight(0x404040, 0.5); // Ambient light for global illumination
+        scene.add(ambientLight);
+
+        const waterGeometry = new THREE.PlaneGeometry(100000, 100000);
+        const waterNormals = new THREE.TextureLoader().load('https://threejs.org/examples/textures/waternormals.jpg');
+        waterNormals.wrapS = waterNormals.wrapT = THREE.RepeatWrapping;
+
+        water = new THREE.Water(waterGeometry, {
+            textureWidth: 512,
+            textureHeight: 512,
+            waterNormals: waterNormals,
+            alpha: 1.0,
+            sunDirection: new THREE.Vector3(),
+            sunColor: 0xffffff,
+            waterColor: 0x001e0f,
+            distortionScale: 3.7,
+            fog: scene.fog !== undefined
+        });
+
+        water.rotation.x = -Math.PI / 2;
+        water.position.y = waterLevel;
+        scene.add(water);
+
+        setupPointerLock();
+
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Tab') {
+                event.preventDefault();
+                toggleConsole();
+            } else if (!consoleVisible) {
+                keyState[event.key.toLowerCase()] = true;
+                if (event.key === ' ' && !isJumping) {
+                    jump();
+                }
+            }
+        });
+        window.addEventListener('keyup', (event) => {
+            if (!consoleVisible) {
+                keyState[event.key.toLowerCase()] = false;
+            }
+        });
+        window.addEventListener('resize', onWindowResize, false);
+
+        setupConsoleInput();
+    }
+
+    function toggleConsole() {
+        const consoleElement = document.getElementById('console');
+        if (consoleVisible) {
+            consoleElement.style.display = 'none';
+            consoleVisible = false;
+            document.body.requestPointerLock();
+        } else {
+            consoleElement.style.display = 'block';
+            consoleVisible = true;
+            document.exitPointerLock();
+            document.getElementById('consoleInput').focus();
+        }
+    }
+
+    function setupConsoleInput() {
+        const consoleInput = document.getElementById('consoleInput');
+        consoleInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                const command = consoleInput.value;
+                handleConsoleCommand(command);
+                consoleInput.value = '';
+            }
+        });
+    }
+
+    function handleConsoleCommand(command) {
+        if (command.startsWith('change_sky:')) {
+            const color = command.split(':')[1].trim();
+            scene.background = new THREE.Color(color);
+        } else {
+            console.log('Unknown command:', command);
+        }
+    }
+
+    function createIslandWithEnhancedCollision() {
+        // Create larger island with Perlin noise
+        const size = 1000;
+        const divisions = 256;
+        islandGeometry = new THREE.PlaneGeometry(size, size, divisions - 1, divisions - 1);
+        islandGeometry.rotateX(-Math.PI / 2);
+
+        // Initialize noise generation
+        noise.seed(Math.random());
+
+        const vertices = islandGeometry.attributes.position.array;
+        for (let i = 0; i < vertices.length; i += 3) {
+            const x = vertices[i];
+            const z = vertices[i + 2];
+            const distanceFromCenter = Math.sqrt(x * x + z * z);
+            let height = noise.perlin2(x / 200, z / 200) * 50;
+
+            const maxDistance = size / 2;
+            const edgeFactor = (maxDistance - distanceFromCenter) / maxDistance;
+            height *= Math.max(edgeFactor, 0);
+
+            vertices[i + 1] = height;
+        }
+        islandGeometry.computeVertexNormals();
+
+        const textureLoader = new THREE.TextureLoader();
+        const grassTexture = textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg');
+        grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
+        grassTexture.repeat.set(120, 120);
+
+        const islandMaterial = new THREE.MeshStandardMaterial({
+            map: grassTexture
+        });
+
+        islandMesh = new THREE.Mesh(islandGeometry, islandMaterial);
+        islandMesh.position.y = waterLevel;
+        scene.add(islandMesh);
+    }
+
+    function createSun() {
+        // Create the sun (a directional light)
+        sun = new THREE.DirectionalLight(0xffffff, 1);
+        sun.position.set(0, 100, 100); // Initially position the sun in the sky
+        scene.add(sun);
+    }
+
+    function createStars() {
+        // Create a sphere of stars that appear at night
+        const starGeometry = new THREE.SphereGeometry(5000, 64, 64);
+        const starMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            side: THREE.BackSide,
+            transparent: true,
+            opacity: 0 // Stars should be invisible during the day
+        });
+
+        const starTexture = new THREE.TextureLoader().load('https://threejs.org/examples/textures/galaxy_starfield.png');
+        starMaterial.map = starTexture;
+
+        starField = new THREE.Mesh(starGeometry, starMaterial);
+        scene.add(starField);
+    }
+
+    function createDoor() {
+        const doorGeometry = new THREE.BoxGeometry(5, 10, 1);
+        const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        door = new THREE.Mesh(doorGeometry, doorMaterial);
+        door.position.set(100, 5, 0); // Positioning the door on the island
+        scene.add(door);
+    }
+
+    function createStonehenge() {
+        stonehengeGroup = new THREE.Group();
+        const stoneMaterial = new THREE.MeshStandardMaterial({ color: 0x999999 });
+
+        // Create multiple stones to simulate Stonehenge, largest stone first
+        const biggestStoneGeometry = new THREE.BoxGeometry(6, 15, 2);
+        biggestStone = new THREE.Mesh(biggestStoneGeometry, stoneMaterial);
+        biggestStone.position.set(0, 7.5, 0); // Place it on top of the hill
+
+        // Other stones around the biggest one
+        for (let i = 0; i < 10; i++) {
+            const stoneGeometry = new THREE.BoxGeometry(4, 10, 2);
+            const stone = new THREE.Mesh(stoneGeometry, stoneMaterial);
+            stone.position.set(Math.cos(i) * 20, 5, Math.sin(i) * 20);
+            stonehengeGroup.add(stone);
+        }
+
+        stonehengeGroup.add(biggestStone);
+
+        // Get the height of the terrain at the Stonehenge's position and place it accordingly
+        const stonehengeX = 50;
+        const stonehengeZ = -50;
+        const terrainHeight = getTerrainHeightAt(stonehengeX, stonehengeZ);
+        stonehengeGroup.position.set(stonehengeX, terrainHeight, stonehengeZ); // Place Stonehenge on the hill
+
+        // Store the initial Y position for animation
+        stonehengeInitialY = stonehengeGroup.position.y;
+
+        scene.add(stonehengeGroup);
+    }
+
+    function animateStonehenge(elapsedTime) {
+        // Make Stonehenge move up and down every 120 seconds
+        const period = 120000; // 120 seconds in milliseconds
+        const amplitude = 100; // How far it moves up and down
+
+        const displacement = Math.sin((elapsedTime % period) / period * Math.PI * 2) * amplitude;
+        stonehengeGroup.position.y = stonehengeInitialY + displacement;
+    }
+
+    function checkProximityToStonehenge() {
+        const distanceToStonehenge = playerPosition.distanceTo(biggestStone.position);
+        if (distanceToStonehenge < 10 && !nearStonehenge) {
+            nearStonehenge = true;
+            document.getElementById('popupPassword').style.display = 'block';
+        } else if (distanceToStonehenge >= 10 && nearStonehenge) {
+            nearStonehenge = false;
+            document.getElementById('popupPassword').style.display = 'none';
+        }
+    }
+
+    function checkDoorProximity() {
+        const distanceToDoor = playerPosition.distanceTo(door.position);
+        if (distanceToDoor < 10 && !nearDoor) {
+            nearDoor = true;
+            document.getElementById('popupPassword').style.display = 'block';
+        } else if (distanceToDoor >= 10 && nearDoor) {
+            nearDoor = false;
+            document.getElementById('popupPassword').style.display = 'none';
+        }
+    }
+
+    function verifyPassword() {
+        const passwordField = document.getElementById('passwordField').value;
+        const messageElement = document.getElementById('passwordMessage');
+        if (passwordField === '12345') {
+            messageElement.innerText = 'Password correct! Synchronizing with EST time...';
+            synchronizeWithRealTime();
+        } else {
+            messageElement.innerText = 'Incorrect password!';
+        }
+    }
+
+    function synchronizeWithRealTime() {
+        usingRealTime = true;
+        // Fetch current time in EST
+        const now = new Date();
+        const offset = -5 * 60; // EST offset from UTC in minutes
+        const estTime = new Date(now.getTime() + offset * 60 * 1000);
+
+        const hours = estTime.getUTCHours();
+        const minutes = estTime.getUTCMinutes();
+        const seconds = estTime.getUTCSeconds();
+
+        const currentTimeInMinutes = hours * 60 + minutes + (seconds / 60);
+        const currentTimeInDayCycle = currentTimeInMinutes / (24 * 60);
+
+        updateDayNightCycle(currentTimeInDayCycle * dayDuration);
+    }
+
+    function updateDayNightCycle(elapsedTime) {
+        // Calculate the current time in the 24-minute day-night cycle
+        const timeOfDay = (elapsedTime % dayDuration) / dayDuration; // From 0 (start of day) to 1 (end of day)
+        const sunAngle = timeOfDay * Math.PI * 2; // Convert time of day into a full circle (0 to 2π)
+
+        // Sun's position follows a circular arc
+        const sunHeight = Math.sin(sunAngle); // Vertical position of the sun
+        const sunIntensity = Math.max(0, sunHeight); // Sun is visible only when above the horizon
+
+        sun.position.set(Math.cos(sunAngle) * 200, sunHeight * 100, Math.sin(sunAngle) * 200);
+        sun.intensity = sunIntensity;
+
+        // Adjust ambient light based on sun height
+        const ambientIntensity = 0.5 + sunHeight * 0.5; // More ambient light during the day
+        ambientLight.intensity = ambientIntensity;
+
+        // Change sky color and ambient light color based on time of day
+        if (sunHeight > 0) {
+            // Daytime colors
+            scene.background = new THREE.Color(0x87CEEB); // Blue sky
+            ambientLight.color.setHSL(0.6, 0.3, 0.6);
+            starField.material.opacity = 0; // Stars are invisible during the day
+        } else {
+            // Nighttime colors
+            const nightProgress = (1 + sunHeight); // How far into the night are we (from 0 to 1)?
+            scene.background = new THREE.Color(0x000033); // Dark sky at night
+            ambientLight.color.setHSL(0.1, 0.1, 0.1);
+            starField.material.opacity = Math.min(1, -sunHeight); // Stars fade in at night
+        }
+
+        // Update the local time and sunset time display
+        updateTimeDisplay(timeOfDay);
+    }
+
+    function updateTimeDisplay(timeOfDay) {
+        const localTimeElement = document.getElementById('localTime');
+        const sunsetTimeElement = document.getElementById('sunsetTime');
+
+        // Calculate local time in the 24-hour day cycle
+        const hours = Math.floor(timeOfDay * hoursInDay);
+        const minutes = Math.floor((timeOfDay * hoursInDay - hours) * 60);
+        const formattedTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+
+        localTimeElement.innerText = `Local Time: ${formattedTime}`;
+
+        // Calculate time until sunset (sunset is at 18:00)
+        const timeUntilSunset = (sunsetHour - hours - (minutes / 60)) % hoursInDay;
+        const sunsetHours = Math.floor(timeUntilSunset);
+        const sunsetMinutes = Math.floor((timeUntilSunset - sunsetHours) * 60);
+        const formattedSunsetTime = `${sunsetHours.toString().padStart(2, '0')}:${sunsetMinutes.toString().padStart(2, '0')}`;
+
+        sunsetTimeElement.innerText = `Time Until Sunset: ${formattedSunsetTime}`;
+    }
+
+    function jump() {
+        if (!isJumping) {
+            velocity.y = jumpSpeed;
+            isJumping = true;
+        }
+    }
+
+    function getTerrainHeightAt(x, z) {
+        const size = 1000;
+        const divisions = 256;
+        const halfSize = size / 2;
+        const gridX = ((x + halfSize) / size) * (divisions - 1);
+        const gridZ = ((z + halfSize) / size) * (divisions - 1);
+
+        const ix = Math.floor(gridX);
+        const iz = Math.floor(gridZ);
+
+        const fx = gridX - ix;
+        const fz = gridZ - iz;
+
+        const vertices = islandGeometry.attributes.position.array;
+
+        // Get the indices of the four surrounding vertices
+        const stride = 3;
+        const indexA = stride * ((iz * divisions) + ix);
+        const indexB = stride * ((iz * divisions) + (ix + 1));
+        const indexC = stride * (((iz + 1) * divisions) + ix);
+        const indexD = stride * (((iz + 1) * divisions) + (ix + 1));
+
+        // Heights of the four vertices
+        const heightA = vertices[indexA + 1];
+        const heightB = vertices[indexB + 1];
+        const heightC = vertices[indexC + 1];
+        const heightD = vertices[indexD + 1];
+
+        // Bilinear interpolation
+        const height = (heightA * (1 - fx) * (1 - fz)) +
+                       (heightB * fx * (1 - fz)) +
+                       (heightC * (1 - fx) * fz) +
+                       (heightD * fx * fz);
+
+        return height;
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const delta = clock.getDelta();
+        const elapsedTime = clock.getElapsedTime() * 1000; // Convert to milliseconds
+        velocity.y -= gravity;
+        playerPosition.y += velocity.y;
+
+        // Get the terrain height at the player's position
+        const terrainHeight = getTerrainHeightAt(playerPosition.x, playerPosition.z) + 1.75; // Add player's half height
+
+        // Prevent the player from sinking below the terrain or water
+        if (playerPosition.y < terrainHeight) {
+            playerPosition.y = terrainHeight;
+            isJumping = false;
+            velocity.y = 0;
+        } else if (playerPosition.y < waterLevel + 1.75) {
+            playerPosition.y = waterLevel + 1.75;
+            isJumping = false;
+            velocity.y = 0;
+        }
+
+        let moveDirection = new THREE.Vector3();
+        if (keyState['w']) moveDirection.z -= playerSpeed * delta;
+        if (keyState['s']) moveDirection.z += playerSpeed * delta;
+        if (keyState['a']) moveDirection.x -= playerSpeed * delta;
+        if (keyState['d']) moveDirection.x += playerSpeed * delta;
+
+        moveDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        playerPosition.add(moveDirection);
+
+        checkDoorProximity();
+        checkProximityToStonehenge();
+
+        // Update the day-night cycle based on elapsed time or real time if synchronized
+        if (!usingRealTime) {
+            updateDayNightCycle(elapsedTime);
+        }
+
+        // Animate Stonehenge moving up and down
+        animateStonehenge(elapsedTime);
+
+        camera.position.copy(playerPosition);
+        camera.rotation.set(pitch, yaw, 0);
+
+        water.material.uniforms['time'].value += delta;
+        renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onMouseMove(event) {
+        const movementX = event.movementX || 0;
+        const movementY = event.movementY || 0;
+
+        yaw -= movementX * 0.002;
+        pitch -= movementY * 0.002;
+        pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+    }
+
+    function setupPointerLock() {
+        const blocker = document.getElementById('blocker');
+        blocker.addEventListener('click', () => {
+            blocker.style.display = 'none';
+            document.body.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === document.body) {
+                document.addEventListener('mousemove', onMouseMove, false);
+            } else {
+                blocker.style.display = 'flex';
+                document.removeEventListener('mousemove', onMouseMove, false);
+            }
+        });
+    }
+</script>
+
+</body>
+</html>
